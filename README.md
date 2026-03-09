@@ -2,8 +2,6 @@
 
 A [Pi](https://github.com/badlogic/pi-mono) extension that sends a native desktop notification when the agent finishes and is waiting for input.
 
-Notifications are **automatically suppressed** when the terminal is focused — you only get notified when you're actually away.
-
 ![pi-notify demo](demo.gif)
 
 ## Compatibility
@@ -52,17 +50,25 @@ When Pi's agent finishes (`agent_end` event), the extension sends a notification
 
 Clicking the notification focuses the terminal window/tab.
 
-## Focus tracking
+## Pausing notifications from other extensions
 
-The extension uses terminal focus reporting (`CSI ?1004h`) to track whether the terminal window/tab is focused. When focused, notifications are suppressed — you only get notified when you're away.
-
-This works on all terminals that support focus events, including WezTerm, Ghostty, iTerm2, Kitty, and most modern terminal emulators.
-
-Other extensions can listen for focus changes:
+Extensions can temporarily disable all pi-notify deliveries and enable them again later:
 
 ```typescript
-pi.events.on("pi-notify:focus", ({ focused }) => {
-    console.log(focused ? "Terminal gained focus" : "Terminal lost focus");
+// pause notifications
+pi.events.emit("pi-notify:pause");
+
+// resume notifications
+pi.events.emit("pi-notify:unpause");
+```
+
+This suppresses both the default `agent_end` notification and notifications triggered via `pi-notify:send` until unpaused.
+
+If you want to react to pause state changes, listen for:
+
+```typescript
+pi.events.on("pi-notify:paused", ({ paused }) => {
+    console.log(paused ? "Notifications paused" : "Notifications resumed");
 });
 ```
 
@@ -121,7 +127,7 @@ interface PiNotifyCustomization {
 **Execution order:**
 1. Defaults are read from `PI_NOTIFY_TITLE` / `PI_NOTIFY_BODY` env vars (or hardcoded fallbacks)
 2. Built-in vars (`cwd`, `folder`) are populated
-3. Focus check — if the terminal is focused, the notification is suppressed (unless forced)
+3. Pause check — if `pi-notify` is paused, the notification is suppressed
 4. `pi-notify:customize` event fires — handlers can mutate title, body, and vars
 5. `{placeholder}` templates are resolved
 6. Notification is sent
@@ -145,11 +151,6 @@ pi.events.emit("pi-notify:send", {
     silent: true,
 });
 
-// Force delivery even when terminal is focused
-pi.events.emit("pi-notify:send", {
-    body: "Critical alert!",
-    force: true,
-});
 ```
 
 The `pi-notify:send` payload:
@@ -160,7 +161,6 @@ interface PiNotifySend {
     body?: string;     // defaults to "Notification"
     vars?: Record<string, string>;  // merged with built-in vars (cwd, folder)
     silent?: boolean;  // skip the sound hook
-    force?: boolean;   // send even when the terminal is focused
 }
 ```
 
@@ -204,7 +204,6 @@ OSC = Operating System Command, part of ANSI escape sequences. Terminals use the
 
 - **tmux** works only with passthrough enabled (`set -g allow-passthrough on`).
 - **zellij/screen** are still unsupported for OSC notifications.
-- **Focus tracking** requires terminal support for CSI ?1004h. If unsupported, focus is assumed and notifications may not fire. Set `force: true` when sending via `pi-notify:send` to bypass focus checks.
 
 ## License
 

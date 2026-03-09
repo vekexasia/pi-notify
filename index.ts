@@ -10,13 +10,6 @@
  * - Windows toast: Windows Terminal (WSL)
  * - Optional sound hook via PI_NOTIFY_SOUND_CMD
  *
- * Focus tracking:
- *   Notifications are automatically suppressed when the terminal is focused.
- *   Uses CSI ?1004h (terminal focus reporting) to track focus/blur.
- *   Other extensions can listen for changes via pi.events:
- *
- *   pi.events.on("pi-notify:focus", ({ focused }) => { ... });
- *
  * Customization:
  * - PI_NOTIFY_TITLE env var: notification title (default: "Pi")
  * - PI_NOTIFY_BODY  env var: notification body  (default: "{folder} — ready for input")
@@ -37,6 +30,15 @@
  * Other extensions can also send their own notifications via the "pi-notify:send" event:
  *
  *   pi.events.emit("pi-notify:send", { title: "My Extension", body: "Something happened!" });
+ *
+ * Notifications can be paused/resumed by other extensions:
+ *
+ *   pi.events.emit("pi-notify:pause");
+ *   pi.events.emit("pi-notify:unpause");
+ *
+ * Listen for state changes via:
+ *
+ *   pi.events.on("pi-notify:paused", ({ paused }) => { ... });
  *
  * The send event accepts an optional `vars` object for template resolution.
  * If title or body are omitted, defaults are used (env vars or hardcoded fallbacks).
@@ -61,8 +63,6 @@ export interface PiNotifySend {
     vars?: Record<string, string>;
     /** If true, skip the sound hook for this notification. */
     silent?: boolean;
-    /** If true, send even when the terminal is focused (default: skip when focused). */
-    force?: boolean;
 }
 
 // ── Notification transport ────────────────────────────────────────────────────
@@ -136,47 +136,26 @@ function resolveTemplates(text: string, vars: Record<string, string>): string {
     return text.replace(/\{(\w+)\}/g, (match, key) => vars[key] ?? match);
 }
 
-// ── Focus tracking via CSI ?1004h ─────────────────────────────────────────────
-
-const FOCUS_IN = "\x1b[I";   // ESC [ I
-const FOCUS_OUT = "\x1b[O";  // ESC [ O
-
 // ── Extension entry point ─────────────────────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
-    let focused = true; // assume focused on startup
-
-    // Enable terminal focus reporting
-    process.stdout.write("\x1b[?1004h");
-
-    const stdinListener = (data: Buffer) => {
-        const str = data.toString();
-        if (str.includes(FOCUS_IN) && !focused) {
-            focused = true;
-            pi.events.emit("pi-notify:focus", { focused: true });
-        }
-        if (str.includes(FOCUS_OUT) && focused) {
-            focused = false;
-            pi.events.emit("pi-notify:focus", { focused: false });
-        }
-    };
-
-    process.stdin.on("data", stdinListener);
-
-    pi.on("session_shutdown", async () => {
-        process.stdout.write("\x1b[?1004l");
-        process.stdin.removeListener("data", stdinListener);
-    });
+    let paused = false;
 
     // ── Notify helper ──────────────────────────────────────────────────────
+
+    function setPaused(nextPaused: boolean): void {
+        if (paused === nextPaused) return;
+        paused = nextPaused;
+        pi.events.emit("pi-notify:paused", { paused });
+    }
 
     function notify(
         rawTitle: string,
         rawBody: string,
         baseVars: Record<string, string>,
-        options?: { silent?: boolean; customize?: boolean; force?: boolean },
+        options?: { silent?: boolean; customize?: boolean },
     ): void {
-        if (focused && !options?.force) return;
+        if (paused) return;
 
         const notification: PiNotifyCustomization = {
             title: rawTitle,
@@ -197,6 +176,16 @@ export default function (pi: ExtensionAPI) {
             runSoundHook();
         }
     }
+
+    // ── pause/unpause controls for other extensions ────────────────────────
+
+    pi.events.on("pi-notify:pause", () => {
+        setPaused(true);
+    });
+
+    pi.events.on("pi-notify:unpause", () => {
+        setPaused(false);
+    });
 
     // ── agent_end: default notification ────────────────────────────────────
 
@@ -222,7 +211,7 @@ export default function (pi: ExtensionAPI) {
             msg.title ?? process.env.PI_NOTIFY_TITLE ?? "Pi",
             msg.body ?? "Notification",
             baseVars,
-            { silent: msg.silent, force: msg.force },
+            { silent: msg.silent },
         );
     });
 }
