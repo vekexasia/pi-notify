@@ -31,6 +31,11 @@
  *
  *   pi.events.emit("pi-notify:send", { title: "My Extension", body: "Something happened!" });
  *
+ * User-facing controls:
+ * - /notify command: toggles notifications on/off
+ * - Ctrl+Shift+N shortcut: toggles notifications on/off
+ * - Footer status: shows 🔔 notify: on / 🔕 notify: off
+ *
  * Notifications can be paused/resumed by other extensions:
  *
  *   pi.events.emit("pi-notify:pause");
@@ -39,6 +44,10 @@
  * Listen for state changes via:
  *
  *   pi.events.on("pi-notify:paused", ({ paused }) => { ... });
+ *
+ * Listen for fired notifications (after they are sent) via:
+ *
+ *   pi.events.on("pi-notify:fired", ({ title, body }) => { ... });
  *
  * The send event accepts an optional `vars` object for template resolution.
  * If title or body are omitted, defaults are used (env vars or hardcoded fallbacks).
@@ -53,6 +62,12 @@ export interface PiNotifyCustomization {
     body: string;
     /** Template variables available for {placeholder} resolution. Handlers can add new keys. */
     vars: Record<string, string>;
+}
+
+/** Shape of the object emitted by the "pi-notify:fired" event after a notification is sent. */
+export interface PiNotifyFired {
+    title: string;
+    body: string;
 }
 
 /** Shape of the object passed to the "pi-notify:send" event. All fields are optional. */
@@ -175,6 +190,15 @@ export default function (pi: ExtensionAPI) {
         if (!options?.silent) {
             runSoundHook();
         }
+
+        pi.events.emit("pi-notify:fired", { title, body });
+    }
+
+    // ── UI helpers ─────────────────────────────────────────────────────────
+
+    function updateStatus(ctx?: { ui: { setStatus: (id: string, text: string) => void } }): void {
+        const label = paused ? "🔕 notify: off" : "🔔 notify: on";
+        ctx?.ui.setStatus("pi-notify", label);
     }
 
     // ── pause/unpause controls for other extensions ────────────────────────
@@ -185,6 +209,40 @@ export default function (pi: ExtensionAPI) {
 
     pi.events.on("pi-notify:unpause", () => {
         setPaused(false);
+    });
+
+    // ── User-facing toggle: /notify command ────────────────────────────────
+
+    pi.registerCommand("notify", {
+        description: "Toggle desktop notifications on/off",
+        handler: async (_args, ctx) => {
+            setPaused(!paused);
+            updateStatus(ctx);
+            ctx.ui.notify(
+                paused ? "Notifications paused 🔕" : "Notifications enabled 🔔",
+                "info",
+            );
+        },
+    });
+
+    // ── User-facing toggle: Ctrl+Shift+N shortcut ─────────────────────────
+
+    pi.registerShortcut("ctrl+shift+n", {
+        description: "Toggle desktop notifications on/off",
+        handler: async (ctx) => {
+            setPaused(!paused);
+            updateStatus(ctx);
+            ctx.ui.notify(
+                paused ? "Notifications paused 🔕" : "Notifications enabled 🔔",
+                "info",
+            );
+        },
+    });
+
+    // ── Show initial status on session start ───────────────────────────────
+
+    pi.on("session_start", async (_event, ctx) => {
+        updateStatus(ctx);
     });
 
     // ── agent_end: default notification ────────────────────────────────────
